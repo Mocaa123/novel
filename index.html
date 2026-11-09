@@ -113,6 +113,27 @@ body{font-family:system-ui,-apple-system,sans-serif;min-height:100vh;background:
     .setting-box{padding:24px}
     .reader-settings{gap:12px;padding:16px}
 }
+
+/* ===== 书籍模式：书架 → 章节目录 ===== */
+.book-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-md);padding:22px;cursor:pointer;display:flex;gap:16px;align-items:center;transition:all var(--transition);position:relative;overflow:hidden}
+.book-card::before{content:'';position:absolute;top:0;left:0;width:100%;height:4px;background:var(--accent);transform:scaleX(0);transform-origin:left;transition:transform 0.3s ease}
+.book-card:hover{transform:translateY(-6px);box-shadow:0 12px 32px rgba(0,0,0,0.12);border-color:var(--accent)}
+.book-card:hover::before{transform:scaleX(1)}
+.book-cover{width:56px;height:76px;flex:none;border-radius:8px;background:linear-gradient(135deg,var(--accent),#8a6fd8);color:#fff;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:700;box-shadow:0 6px 16px rgba(94,114,228,0.3)}
+.book-info{min-width:0;flex:1}
+.book-name{font-size:1.12rem;font-weight:600;line-height:1.4;margin-bottom:6px;word-break:break-all}
+.book-count{font-size:0.85rem;color:var(--accent);margin-bottom:4px}
+.book-author{font-size:0.8rem;color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.book-back-bar{grid-column:1/-1;display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:4px 0;padding-bottom:14px;border-bottom:1px solid var(--border)}
+.book-back-btn{background:transparent;border:1px solid var(--border);color:var(--accent);padding:8px 16px;border-radius:12px;cursor:pointer;font-size:0.85rem;transition:var(--transition)}
+.book-back-btn:hover{background:var(--accent);color:#fff}
+.book-detail-name{font-size:1.35rem;font-weight:700}
+.book-detail-count{font-size:0.85rem;color:var(--sub)}
+.chapter-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-md);padding:18px 20px;cursor:pointer;transition:all var(--transition);display:flex;align-items:center;gap:14px}
+.chapter-card:hover{border-color:var(--accent);transform:translateY(-3px);box-shadow:0 8px 22px rgba(0,0,0,0.08)}
+.chapter-index{font-size:0.8rem;color:var(--sub);min-width:30px;font-variant-numeric:tabular-nums}
+.chapter-name{font-size:1rem;font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chapter-author{font-size:0.78rem;color:var(--sub);flex:none}
 </style>
 </head>
 <body data-theme="sepia">
@@ -252,6 +273,7 @@ let sortOrder = [];
 let currentViewMode = "book";
 let currentSortMode = "custom";
 let currentNovel = null;
+let currentBook = null;   // 书籍模式下当前进入的书；null 表示在书架
 let currentPage = 1;
 let totalPages = 1;
 let pageContents = [];
@@ -345,7 +367,7 @@ async function batchLoadNovels(fileList) {
                 
                 const rawText = await res.text();
                 const metaMatch = rawText.match(/<!--\s*ZW_META:\s*(\{[\s\S]*?\})\s*-->/);
-                let meta = { title: "", author: "", book: "未分类" };
+                let meta = { title: "", author: "", book: "" };
                 
                 if (metaMatch) {
                     try { meta = JSON.parse(metaMatch[1]); } catch(e) {}
@@ -456,42 +478,89 @@ function sortNovels(list) {
 function renderNovelList() {
     novelListEl.innerHTML = "";
     const sortedList = sortNovels(filterNovels);
-    
+
     if (sortedList.length === 0) {
         showStatus("🔍 没有找到匹配的小说");
         return;
     }
-    
+
     if (currentViewMode === "book") {
-        // 按书籍分组，组内保持排序
-        const bookMap = {};
-        sortedList.forEach(novel => {
-            if (!bookMap[novel.book]) bookMap[novel.book] = [];
-            bookMap[novel.book].push(novel);
-        });
-        
-        // 书籍顺序按第一个章节的排序位置
-        const bookNames = Object.keys(bookMap).sort((a,b) => {
-            const aIdx = sortedList.findIndex(n => n.book === a);
-            const bIdx = sortedList.findIndex(n => n.book === b);
-            return aIdx - bIdx;
-        });
-        
-        bookNames.forEach(bookName => {
-            const title = document.createElement("div");
-            title.className = "book-group-title";
-            title.innerHTML = `<i class="fa-solid fa-book-bookmark"></i> ${bookName} (${bookMap[bookName].length}篇)`;
-            novelListEl.appendChild(title);
-            
-            bookMap[bookName].forEach(novel => {
-                novelListEl.appendChild(createNovelCard(novel));
-            });
-        });
+        if (currentBook) {
+            renderChapterList(sortedList);
+        } else {
+            renderBookShelf(sortedList);
+        }
     } else {
         sortedList.forEach(novel => {
             novelListEl.appendChild(createNovelCard(novel));
         });
     }
+}
+
+// 由书名算一个稳定色相，同一本书永远同一颜色
+function coverHue(name) {
+    let h = 0;
+    for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
+    return h;
+}
+
+// 书架层：只显示书名
+function renderBookShelf(sortedList) {
+    const bookMap = {};
+    const bookOrder = [];
+    sortedList.forEach(novel => {
+        if (!bookMap[novel.book]) {
+            bookMap[novel.book] = [];
+            bookOrder.push(novel.book);
+        }
+        bookMap[novel.book].push(novel);
+    });
+
+    bookOrder.forEach(bookName => {
+        const chapters = bookMap[bookName];
+        const authors = [...new Set(chapters.map(c => c.author).filter(Boolean))];
+
+        const card = document.createElement("div");
+        card.className = "book-card";
+        const hue = coverHue(bookName);
+        card.innerHTML = `
+            <div class="book-cover" style="background:hsl(${hue},58%,56%)"></div>
+            <div class="book-info">
+                <div class="book-name">${bookName}</div>
+                <div class="book-count">共 ${chapters.length} 章</div>
+                <div class="book-author">✍️ ${authors.join("、") || "佚名"}</div>
+            </div>
+        `;
+        card.onclick = () => {
+            currentBook = bookName;
+            renderNovelList();
+            window.scrollTo({ top: 0, behavior: "smooth" });
+        };
+        novelListEl.appendChild(card);
+    });
+}
+
+// 书籍内部：章节目录
+function renderChapterList(sortedList) {
+    const chapters = sortedList.filter(n => n.book === currentBook);
+
+    const bar = document.createElement("div");
+    bar.className = "book-back-bar";
+    bar.innerHTML = `
+        <button class="book-back-btn">← 返回书架</button>
+        <span class="book-detail-name">${currentBook}</span>
+        <span class="book-detail-count">共 ${chapters.length} 章</span>
+    `;
+    bar.querySelector(".book-back-btn").onclick = () => {
+        currentBook = null;
+        renderNovelList();
+        window.scrollTo({ top: 0, behavior: "smooth" });
+    };
+    novelListEl.appendChild(bar);
+
+    chapters.forEach((novel, i) => {
+        novelListEl.appendChild(createChapterCard(novel, i + 1));
+    });
 }
 
 function createNovelCard(novel) {
@@ -507,9 +576,25 @@ function createNovelCard(novel) {
     return card;
 }
 
+function createChapterCard(novel, index) {
+    const card = document.createElement("div");
+    card.className = "chapter-card";
+    card.innerHTML = `
+        <span class="chapter-index">${String(index).padStart(2, "0")}</span>
+        <span class="chapter-name">${novel.title}</span>
+        <span class="chapter-author">✍️ ${novel.author}</span>
+    `;
+    card.onclick = () => openReader(novel);
+    return card;
+}
+
 // ===================== 阅读功能 =====================
 function openReader(novel) {
     currentNovel = novel;
+    const backBtn = document.querySelector(".reader-header .back-btn");
+    if (backBtn) backBtn.innerHTML = currentBook
+        ? '<i class="fa-solid fa-arrow-left"></i> 返回目录'
+        : '<i class="fa-solid fa-arrow-left"></i> 返回书架';
     $("readerTitle").textContent = novel.title;
     $("readerMeta").innerHTML = `书籍：${novel.book} &nbsp;|&nbsp; 作者：${novel.author} &nbsp;|&nbsp; 文件：${novel.fileName}`;
     
@@ -613,17 +698,20 @@ function doSearch() {
             || n.content.toLowerCase().includes(keyword)
         );
     }
+    currentBook = null;
     renderNovelList();
 }
 
 function resetSearch() {
     searchInput.value = "";
     filterNovels = [...allNovels];
+    currentBook = null;
     renderNovelList();
 }
 
 function switchViewMode(mode, btn) {
     currentViewMode = mode;
+    currentBook = null;
     document.querySelectorAll(".mode-btn").forEach(b => b.classList.remove("active"));
     if (btn) btn.classList.add("active");
     renderNovelList();
@@ -721,5 +809,6 @@ $("settingModal").addEventListener("click", e => {
     if (e.target.id === "settingModal") closeSettingModal();
 });
 </script>
+<script src="para-comments.js"></script>
 </body>
 </html>
